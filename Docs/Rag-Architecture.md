@@ -112,26 +112,41 @@ Query-time use
 
 4.0 Scheduler and scraping service
 
+End-to-end flow:
+
+```
+GH Actions cron (daily 09:15 IST)
+      │
+      ▼
+scrape (5 Groww URLs) → normalize → chunk → embed (BGE-small) → Chroma upsert (data/chroma/)
+```
+
 Scheduler — GitHub Actions
 
-* Product default: Run every day at 09:15 IST (Asia/Kolkata).
-* Cron in workflows: GitHub Actions schedule uses UTC. For 09:15 IST use 45 3 * * * (03:45 UTC ≈ 09:15 IST). Re-verify after daylight-saving assumptions (India has no DST; UTC offset is fixed).
-* Workflow responsibilities: The scheduled job in [.github/workflows/ingest.yml](about:blank) checks out the repo, installs dependencies, and runs in order: 4.0 scrape → 4.1 normalize → 4.2 chunk + embed (local BAAI/bge-small-en-v1.5) → 4.3 upsert to on-disk Chroma under data/chroma/ (same run_id throughout; each phase picks the latest directory from the previous stage, which on a clean runner is the run just produced). See [chunking-embedding-architecture.md](about:blank) for chunk/embed details.
-* Secrets: Embedding uses local BAAI/bge-small-en-v1.5 (no API key). Chroma: vectors live in a local persist directory (chromadb.PersistentClient, default data/chroma/) — no hosted vector API. Phase 4.3 and the runtime retriever use the same INGEST_CHROMA_DIR / INGEST_CHROMA_COLLECTION settings. The workflow uploads data/chroma/ as an artifact for operators or deploy steps. Optional: INGEST_USER_AGENT for scraping via ${{ secrets.* }}. Never commit .env with production keys.
-* Runners: Default ubuntu-latest is sufficient if the job is I/O and API-bound; pin a Python/Node version explicitly in the workflow.
-* Timeouts / billing: Set timeout-minutes on the job (e.g. 30–60) so a hung scrape does not consume quota indefinitely.
-* Idempotency: Workflows may be retried; ingest should be safe to re-run (content_hash / upsert semantics). Use at-least-once semantics.
-* Manual runs: Enable workflow_dispatch on the same workflow so operators can trigger a full ingest from the Actions tab without waiting for the cron.
-* Artifacts (optional): Upload scrape logs or a small manifest (URL → status) as a workflow artifact for debugging failed runs.
-* Alternative triggers: POST /admin/reindex or a CLI on your app host can still call the same ingest code path; GitHub Actions remains the primary scheduled driver.
+* **Purpose**: Run the full ingest pipeline once a day at **09:15 IST (Asia/Kolkata)** so the Chroma index always reflects the latest content from the 5 allowlisted Groww HDFC scheme pages. Manual re-runs are supported via `workflow_dispatch`.
+* Cron in workflows: GitHub Actions cron uses UTC. For 09:15 IST use `45 3 * * *` (03:45 UTC ≈ 09:15 IST). India has no DST — the UTC offset is fixed at +05:30, so no seasonal adjustment is needed.
+* Workflow responsibilities: The scheduled job in `.github/workflows/ingest.yml` checks out the repo, installs dependencies, and runs in order: scrape (§4.0) → normalize (§4.1) → chunk + embed with local BAAI/bge-small-en-v1.5 → upsert to on-disk Chroma under `data/chroma/` (§4.3). Same `run_id` end-to-end; each stage reads the latest run directory produced by the previous stage. See `chunking-embedding-architecture.md` for chunk/embed details.
+* Secrets: Embedding is local (no API key). Chroma is local (`chromadb.PersistentClient`, default `data/chroma/`) — no hosted vector API. Phase 4.3 and the runtime retriever share `INGEST_CHROMA_DIR` / `INGEST_CHROMA_COLLECTION`. `GROQ_API_KEY` is **not** required for ingest (it is a runtime concern, §6). Optional `INGEST_USER_AGENT` via `${{ secrets.* }}`. Never commit `.env` with production keys.
+* Runners: `ubuntu-latest` is sufficient (I/O- and CPU-bound only). Pin the Python version explicitly in the workflow for reproducibility.
+* Timeouts: Set `timeout-minutes: 30–60` on the job so a hung scrape never consumes quota indefinitely.
+* Idempotency: Re-runs are safe — chunk-id upserts and `content_hash` checks make ingest at-least-once.
+* Manual runs: `workflow_dispatch` enabled so operators can trigger a full ingest from the Actions tab without waiting for the cron.
+* Artifacts: Upload `data/chroma/`, the chunked JSONL, and a per-run `manifest.json` (URL → HTTP status, content_hash, chunk_count) for deploy and debugging.
+* Alternative triggers: `POST /admin/reindex` or a CLI on the app host can call the same ingest code path; GitHub Actions remains the primary scheduled driver.
 
 Scraping service
 
-* Input: URL registry (allowlist only).
-* Behavior: For each URL, perform an HTTP(S) GET (or the minimal requests needed if the site uses client-rendered data—then document whether headless fetch is required). Respect robots.txt, rate limits between requests, and use a stable User-Agent string identifying the assistant project.
-* Output: Raw HTML (per URL, per run) written to durable storage (object store or disk) with a timestamp; forward the same payload to the normalize stage. On non-2xx responses, time-outs, or empty body: log, mark failure for that URL, and continue with other URLs (see §4.2).
-* Scope: This component is not a general-purpose crawler: it only retrieves URLs explicitly listed in the registry. Query-time retrieval never calls the live web.
-* Separation: Can be deployed as a library invoked by the scheduler worker, or as an internal HTTP endpoint POST /internal/scrape-and-ingest called by the scheduler; either way, scheduler → scrape → rest of pipeline is the contract.
+* **Input**: the URL registry (allowlist only). Current registry — 5 Groww HDFC scheme pages, HTML only:
+  * `https://groww.in/mutual-funds/hdfc-mid-cap-fund-direct-growth`
+  * `https://groww.in/mutual-funds/hdfc-equity-fund-direct-growth`
+  * `https://groww.in/mutual-funds/hdfc-focused-fund-direct-growth`
+  * `https://groww.in/mutual-funds/hdfc-elss-tax-saver-fund-direct-plan-growth`
+  * `https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth`
+* **Behavior**: For each URL, perform an HTTP(S) GET with a polite rate-limit between calls and a stable, identifying `User-Agent`. Respect `robots.txt`. If Groww requires client-side JS to render critical fields (e.g. NAV, AUM), a headless-fetch follow-up is documented; until then the structured store reflects only what static HTML exposes (often via the embedded `__NEXT_DATA__` JSON blob).
+* **Output**: Raw HTML written per URL per run to `data/raw/<run_id>/<scheme_slug>.html`, alongside a `manifest.json` capturing URL → HTTP status, `fetched_at`, `content_hash`. The same payload is forwarded to the normalize stage (§4.1).
+* **Failure handling**: Non-2xx, timeout, or empty body → log, mark that URL failed in the manifest, and continue with the remaining URLs. A failed URL is excluded from the index until fixed; never substitute an off-allowlist source (see §4.2).
+* **Scope**: Not a general-purpose crawler — only registry URLs are fetched, and query-time retrieval never hits the live web.
+* **Deployment shape**: The scheduler invokes the scraper as a library, or via an internal `POST /internal/scrape-and-ingest`. Either is acceptable; the contract is `scheduler → scrape → normalize → chunk → embed → index`.
 
 4.1 Stages
 

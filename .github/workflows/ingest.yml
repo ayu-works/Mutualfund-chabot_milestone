@@ -1,0 +1,77 @@
+name: ingest
+
+on:
+  schedule:
+    # Daily at 09:15 IST = 03:45 UTC (India has no DST; offset fixed at +05:30).
+    - cron: "45 3 * * *"
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Optional run_id override (default: UTC timestamp)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ingest-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    name: Phase 4.0 — scrape allowlisted URLs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      INGEST_REGISTRY_PATH: data/registry/urls.yaml
+      INGEST_RAW_DIR: data/raw
+      INGEST_USER_AGENT: ${{ secrets.INGEST_USER_AGENT || 'mf-faq-assistant-ingest/0.1 (+https://github.com/your-org/mf-faq-assistant)' }}
+    outputs:
+      run_id: ${{ steps.scrape.outputs.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compute run_id
+        id: run_id
+        run: |
+          if [ -n "${{ github.event.inputs.run_id }}" ]; then
+            echo "run_id=${{ github.event.inputs.run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=$(date -u +'%Y-%m-%dT%H%M%SZ')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run scraper (phase 4.0)
+        id: scrape
+        run: |
+          python -m ingest.phase_4_0_scrape \
+            --registry "$INGEST_REGISTRY_PATH" \
+            --raw-dir "$INGEST_RAW_DIR" \
+            --run-id "${{ steps.run_id.outputs.run_id }}"
+          echo "run_id=${{ steps.run_id.outputs.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload raw HTML + manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-${{ steps.run_id.outputs.run_id }}
+          path: data/raw/${{ steps.run_id.outputs.run_id }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Future stages (4.1 normalize, 4.2 chunk+embed, 4.3 chroma upsert) plug in here
+  # as additional jobs that depend on `scrape` via `needs: scrape` and consume the
+  # same run_id via `needs.scrape.outputs.run_id`.

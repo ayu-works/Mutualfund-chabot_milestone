@@ -1,0 +1,31 @@
+version: 1
+amc: HDFC Mutual Fund
+default_source_type: groww_scheme_page
+allowed_hosts:
+  - groww.in
+
+urls:
+  - scheme_id: hdfc-mid-cap-fund-direct-growth
+    scheme_name: HDFC Mid Cap Fund Direct Growth
+    category: mid-cap
+    url: https://groww.in/mutual-funds/hdfc-mid-cap-fund-direct-growth
+
+  - scheme_id: hdfc-equity-fund-direct-growth
+    scheme_name: HDFC Equity Fund Direct Growth
+    category: flexi-cap
+    url: https://groww.in/mutual-funds/hdfc-equity-fund-direct-growth
+
+  - scheme_id: hdfc-focused-fund-direct-growth
+    scheme_name: HDFC Focused Fund Direct Growth
+    category: focused
+    url: https://groww.in/mutual-funds/hdfc-focused-fund-direct-growth
+
+  - scheme_id: hdfc-elss-tax-saver-fund-direct-plan-growth
+    scheme_name: HDFC ELSS Tax Saver Fund Direct Plan Growth
+    category: elss
+    url: https://groww.in/mutual-funds/hdfc-elss-tax-saver-fund-direct-plan-growth
+
+  - scheme_id: hdfc-large-cap-fund-direct-growth
+    scheme_name: HDFC Large Cap Fund Direct Growth
+    category: large-cap
+    url: https://groww.in/mutual-funds/hdfc-large-cap-fund-direct-growth
