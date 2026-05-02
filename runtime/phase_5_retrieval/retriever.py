@@ -5,7 +5,7 @@ See docs/rag-architecture.md §5.
 * §5.1 Query preprocessing: lowercase normalize + scheme resolution via the
   URL registry (dictionary match on distinctive scheme-name tokens).
 * §5.2 Retrieval mechanics: BGE query embedding (with the asymmetric query
-  prefix per chunking-embedding-architecture.md §4.1), Chroma Cloud query,
+  prefix per chunking-embedding-architecture.md §4.1), Chroma query,
   optional metadata filter (`scheme_id`, `amc`), merge by `source_url`.
 * §5.3 Single-citation rule: pick the highest-confidence chunk's
   `source_url` as the citation; tie-break by newer `fetched_at`.

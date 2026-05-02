@@ -21,6 +21,11 @@ data/chroma/
 data/structured/
 data/threads.sqlite
 
+# Next.js (web/)
+web/node_modules/
+web/.next/
+web/.env.local
+
 # Editor
 .vscode/
 .idea/

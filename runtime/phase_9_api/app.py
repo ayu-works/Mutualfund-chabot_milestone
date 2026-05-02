@@ -94,8 +94,8 @@ def _debug_enabled() -> bool:
 
 
 def _web_dir() -> Path:
-    # Repo root / web/
-    return Path(__file__).resolve().parents[2] / "web"
+    # Next.js static export output (run `npm run build` in web/ to populate)
+    return Path(__file__).resolve().parents[2] / "web" / "out"
 
 
 def create_app(

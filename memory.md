@@ -26,7 +26,7 @@ These are decided. Do not re-litigate without user approval.
 
 | Layer | Choice |
 | --- | --- |
-| Vector DB | Chroma `PersistentClient` on disk under `data/chroma/`, **384-dim, cosine** |
+| Vector DB | Chroma `PersistentClient` on disk (`CHROMA_PATH`, default `data/chroma/`), **384-dim, cosine** |
 | Embeddings | `BAAI/bge-small-en-v1.5` via `sentence-transformers` (local, 384-dim, 512 max input tokens) |
 | LLM (generation) | Groq `llama-3.1-8b-instant` (env var `GROQ_API_KEY`) |
 | Scheduler | GitHub Actions cron `45 3 * * *` UTC = **09:15 IST** (India has no DST) |
