@@ -1,8 +1,6 @@
 import type { Thread, Message } from './types'
 
-// In dev, Next.js rewrites /api/* → http://localhost:8000/*
-// Set NEXT_PUBLIC_API_BASE to override (e.g. for static export served by FastAPI)
-const BASE = process.env.NEXT_PUBLIC_API_BASE ?? '/api'
+const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
 export async function createThread(): Promise<Thread> {
   const res = await fetch(`${BASE}/threads`, {
