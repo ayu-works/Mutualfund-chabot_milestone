@@ -49,6 +49,25 @@ export function useChat() {
     }
   }, [])
 
+  const deleteThread = useCallback(
+    async (threadId: string) => {
+      try {
+        await api.deleteThread(threadId)
+        setThreads((prev) => prev.filter((t) => t.thread_id !== threadId))
+        if (activeThreadId === threadId) {
+          const t = await api.createThread()
+          setThreads((prev) => [t, ...prev])
+          setActiveThreadId(t.thread_id)
+          setMessages([])
+          setError(null)
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to delete thread')
+      }
+    },
+    [activeThreadId]
+  )
+
   const sendMessage = useCallback(
     async (content: string) => {
       if (!activeThreadId || !content.trim()) return
@@ -100,5 +119,6 @@ export function useChat() {
     newThread,
     selectThread,
     sendMessage,
+    deleteThread,
   }
 }

@@ -176,6 +176,12 @@ def create_app(
             ]
         return [MessageOut(**m.to_dict()) for m in msgs]
 
+    @app.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_thread(thread_id: str) -> None:
+        deleted = _store.delete_thread(thread_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="thread not found")
+
     @app.post(
         "/threads/{thread_id}/messages",
         response_model=PostMessageResponse,

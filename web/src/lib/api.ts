@@ -25,6 +25,11 @@ export async function getMessages(threadId: string): Promise<Message[]> {
   return raw.map((m) => ({ ...m, role: m.role as 'user' | 'assistant' }))
 }
 
+export async function deleteThread(threadId: string): Promise<void> {
+  const res = await fetch(`${BASE}/threads/${threadId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`Failed to delete thread: ${res.status}`)
+}
+
 export async function sendMessage(
   threadId: string,
   content: string

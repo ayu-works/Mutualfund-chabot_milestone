@@ -142,6 +142,13 @@ class ThreadStore:
             created_at=row["created_at"],
         )
 
+    def delete_thread(self, thread_id: str) -> bool:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM threads WHERE thread_id = ?", (thread_id,)
+            )
+            return cur.rowcount > 0
+
     def list_threads(self, *, session_key: str | None = None, limit: int = 50) -> list[Thread]:
         with self._conn() as conn:
             if session_key is None:
