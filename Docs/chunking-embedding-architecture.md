@@ -1,6 +1,6 @@
 # Chunking & Embedding Architecture
 
-Companion document to [`rag-architecture.md`](./rag-architecture.md). Covers the implementation-level contract for **phase 4.1 (chunk + enrich)** and **phase 4.2 (embed)** of the ingestion pipeline. The output of this phase is consumed by **phase 4.3 (local Chroma upsert)**.
+Companion document to [`rag-architecture.md`](./rag-architecture.md). Covers the implementation-level contract for **phase 4.1 (chunk + enrich)** and **phase 4.2 (embed)** of the ingestion pipeline. The output of this phase is consumed by **phase 4.3 (Chroma Cloud upsert via `chromadb.CloudClient`)**.
 
 Scope: HTML-only corpus (5 Groww HDFC scheme pages). PDF-aware extensions are noted but out of scope for the initial build.
 
@@ -21,7 +21,7 @@ Scope: HTML-only corpus (5 Groww HDFC scheme pages). PDF-aware extensions are no
 [embed]   ←  THIS DOC §4    chunk records + 384-dim vectors
    │                        data/embeddings/<run_id>/embeddings.jsonl
    ▼
-[index 4.3]                 upsert into Chroma (data/chroma/)
+[index 4.3]                 upsert into Chroma Cloud (CloudClient)
 ```
 
 Each stage writes a self-contained artifact under a `run_id` so the next stage can be re-run idempotently without re-doing prior work.
@@ -230,8 +230,10 @@ Environment variables (loaded from `.env` locally, GitHub Actions secrets/vars i
 | `INGEST_NORMALIZED_DIR` | `data/normalized/` | Where normalizer writes section JSON. |
 | `INGEST_CHUNKS_DIR` | `data/chunks/` | Where this stage writes chunk JSONL. |
 | `INGEST_EMBEDDINGS_DIR` | `data/embeddings/` | Where this stage writes vectors. |
-| `INGEST_CHROMA_DIR` | `data/chroma/` | Phase 4.3 persistent client path. |
-| `INGEST_CHROMA_COLLECTION` | `mf_faq_chunks` | Collection name (per environment). |
+| `CHROMA_TENANT` | _required_ | Chroma Cloud tenant id (phase 4.3). |
+| `CHROMA_DATABASE` | _required_ | Chroma Cloud database name (e.g. `mf_faq_dev` / `mf_faq_prod`). |
+| `CHROMA_API_KEY` | _required, secret_ | Chroma Cloud API key. Never commit. Inject via `.env` locally and `${{ secrets.CHROMA_API_KEY }}` in CI. |
+| `INGEST_CHROMA_COLLECTION` | `mf_faq_chunks` | Collection name within the database. |
 | `EMBED_MODEL_ID` | `BAAI/bge-small-en-v1.5` | Frozen across index + query. |
 | `EMBED_BATCH_SIZE` | `32` | CPU default. |
 | `CHUNK_TARGET_TOKENS` | `400` | Target chunk size. |

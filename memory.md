@@ -76,14 +76,14 @@ requirements.txt
 | Phase | Status | Entry point |
 | --- | --- | --- |
 | 4.0 scrape | ✅ Done, live-verified | `python -m ingest.phase_4_0_scrape -v` |
-| 4.1 normalize + chunk | ⬜ Not started — placeholder package | (build next) |
-| 4.2 embed | ⬜ Not started — placeholder package | (to build) |
-| 4.3 Chroma upsert | ⬜ Not started — placeholder package | (to build) |
-| 5 retrieval | ⬜ Placeholder | (to build) |
-| 6 generation (Groq) | ⬜ Placeholder | (to build) |
-| 7 safety / refusal | ⬜ Placeholder | (to build) |
-| 8 multi-thread | ⬜ Placeholder | (to build) |
-| 9 FastAPI | ⬜ Placeholder | (to build) |
+| 4.1 normalize + chunk | ✅ Implemented | `python -m ingest.phase_4_1_chunk --run-id <id>` |
+| 4.2 embed | ✅ Implemented | `python -m ingest.phase_4_2_embed --run-id <id>` |
+| 4.3 Chroma upsert | ✅ Implemented | `python -m ingest.phase_4_3_index --run-id <id>` |
+| 5 retrieval | ✅ Implemented | `python -m runtime.phase_5_retrieval "<query>"` |
+| 6 generation (Groq) | ✅ Implemented | `python -m runtime.phase_6_generation "<query>"` |
+| 7 safety / refusal | ✅ Implemented | `python -m runtime.phase_7_safety "<query>"` (`--route-only` to skip retrieval) |
+| 8 multi-thread | ✅ Implemented | `python -m runtime.phase_8_threads {new-thread\|say\|history\|context\|list-threads}` |
+| 9 FastAPI | ✅ Implemented | `python -m runtime.phase_9_api` (UI at `/ui/`, OpenAPI at `/docs`) |
 
 Placeholder packages exist as empty `__init__.py` files so future phases drop into a known module path without restructuring imports.
 
@@ -116,26 +116,15 @@ CI: `.github/workflows/ingest.yml` runs the same command daily at 09:15 IST and 
 
 ---
 
-## 8. Next task — phase 4.1 (normalize + structured-fact extraction)
+## 8. Next task — phase 6 (Groq generation)
 
-Per [`docs/chunking-embedding-architecture.md`](./docs/chunking-embedding-architecture.md) §2.
+Phases 4.0 → 5 are implemented. The next layer to build is phase 6 (generation), per `docs/rag-architecture.md` §6:
 
-**Inputs**:
-- `data/raw/<run_id>/<scheme_slug>.html`
-- `data/raw/<run_id>/manifest.json` (for `fetched_at`, `content_hash`, source `url`)
-
-**Outputs**:
-- `data/normalized/<run_id>/<scheme_slug>.json` — sections array, each `{ section_id, section_title, kind: prose|table|list, text, table_html? }`. Strip nav/footer/ads. Tables as Markdown **and** keep raw `table_html`.
-- `data/structured/<run_id>/scheme_facts.json` — typed fields per scheme (NAV+currency+as_of, minimum_sip+frequency, fund_size/aum, expense_ratio+plan, rating+rating_kind). `null` for any field not parsed; never invent values. See `rag-architecture.md` §3.4 for the full schema.
-
-**Implementation approach**:
-1. Parse `<script id="__NEXT_DATA__" type="application/json">…</script>` first → primary source for structured fields.
-2. Fall back to BeautifulSoup over rendered HTML for prose/table sections that are not in the JSON blob.
-3. Token-count chunks against the BGE tokenizer (`AutoTokenizer.from_pretrained("BAAI/bge-small-en-v1.5")`), not a generic GPT tokenizer.
-4. Emit a `manifest.json` per stage with counts + per-scheme parse-warning flags.
-5. CLI shape: `python -m ingest.phase_4_1_chunk --run-id <id>` (matches the convention used by phase 4.0).
-
-Likely deps to add to `requirements.txt`: `beautifulsoup4`, `lxml`, `transformers`.
+- Pack retrieved chunks (`RetrievalResult.merged_context`) with explicit `Source URL:` headers.
+- Call Groq chat completions (`GROQ_API_KEY`, model `llama-3.1-8b-instant`) with low temperature.
+- Output schema: ≤3 sentences, exactly one URL = `result.citation_url`, footer `Last updated from sources: <date>`.
+- Run §7.2-style validation (allowlist URL, sentence count, forbidden phrases) with one retry, then templated fallback.
+- CLI: `python -m runtime.phase_6_generation "<query>"`.
 
 ---
 

@@ -19,16 +19,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  scrape:
-    name: Phase 4.0 — scrape allowlisted URLs
+  ingest:
+    name: Scrape → normalize → chunk → embed → index
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
+      # Phase 4.0 — scrape
       INGEST_REGISTRY_PATH: data/registry/urls.yaml
       INGEST_RAW_DIR: data/raw
       INGEST_USER_AGENT: ${{ secrets.INGEST_USER_AGENT || 'mf-faq-assistant-ingest/0.1 (+https://github.com/your-org/mf-faq-assistant)' }}
-    outputs:
-      run_id: ${{ steps.scrape.outputs.run_id }}
+      INGEST_RATE_LIMIT_SECONDS: "1.5"
+      INGEST_HTTP_TIMEOUT: "30"
+      INGEST_HTTP_RETRIES: "2"
+      INGEST_MIN_SUCCESS_RATIO: "0.8"
+      # Phase 4.1+ — normalize / chunk / embed
+      INGEST_NORMALIZED_DIR: data/normalized
+      INGEST_CHUNKS_DIR: data/chunks
+      INGEST_EMBEDDINGS_DIR: data/embeddings
+      INGEST_STRUCTURED_DIR: data/structured
+      EMBED_MODEL_ID: BAAI/bge-small-en-v1.5
+      EMBED_BATCH_SIZE: "32"
+      CHUNK_TARGET_TOKENS: "400"
+      CHUNK_MAX_TOKENS: "488"
+      CHUNK_OVERLAP_TOKENS: "48"
+      # Phase 4.3 — Chroma Cloud (trychroma.com)
+      CHROMA_TENANT: ${{ secrets.CHROMA_TENANT }}
+      CHROMA_DATABASE: ${{ secrets.CHROMA_DATABASE }}
+      CHROMA_API_KEY: ${{ secrets.CHROMA_API_KEY }}
+      INGEST_CHROMA_COLLECTION: ${{ vars.INGEST_CHROMA_COLLECTION || 'mf_faq_chunks' }}
+      # Tame noisy logs / disable telemetry
+      ANONYMIZED_TELEMETRY: "False"
+      HF_HUB_DISABLE_SYMLINKS_WARNING: "1"
 
     steps:
       - name: Checkout
@@ -39,6 +60,22 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
+
+      - name: Cache HuggingFace model (BGE-small ~130MB)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-${{ env.EMBED_MODEL_ID }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            hf-${{ env.EMBED_MODEL_ID }}-
+
+      - name: Cache previous embeddings (incremental reuse)
+        uses: actions/cache@v4
+        with:
+          path: data/embeddings
+          key: embeddings-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            embeddings-${{ github.ref_name }}-
 
       - name: Install dependencies
         run: |
@@ -54,24 +91,53 @@ jobs:
             echo "run_id=$(date -u +'%Y-%m-%dT%H%M%SZ')" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Run scraper (phase 4.0)
-        id: scrape
+      - name: Phase 4.0 — scrape allowlisted URLs
         run: |
           python -m ingest.phase_4_0_scrape \
             --registry "$INGEST_REGISTRY_PATH" \
             --raw-dir "$INGEST_RAW_DIR" \
             --run-id "${{ steps.run_id.outputs.run_id }}"
-          echo "run_id=${{ steps.run_id.outputs.run_id }}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload raw HTML + manifest
+      - name: Phase 4.1 — normalize HTML + extract structured facts
+        run: |
+          python -m ingest.phase_4_1_normalize \
+            --raw-dir "$INGEST_RAW_DIR" \
+            --out-dir "$INGEST_NORMALIZED_DIR" \
+            --facts-dir "$INGEST_STRUCTURED_DIR" \
+            --run-id "${{ steps.run_id.outputs.run_id }}"
+
+      - name: Phase 4.1 — chunk normalized sections
+        run: |
+          python -m ingest.phase_4_1_chunk \
+            --normalized-dir "$INGEST_NORMALIZED_DIR" \
+            --out-dir "$INGEST_CHUNKS_DIR" \
+            --run-id "${{ steps.run_id.outputs.run_id }}"
+
+      - name: Phase 4.2 — embed chunks (BAAI/bge-small-en-v1.5, local CPU)
+        run: |
+          python -m ingest.phase_4_2_embed \
+            --chunks-dir "$INGEST_CHUNKS_DIR" \
+            --out-dir "$INGEST_EMBEDDINGS_DIR" \
+            --run-id "${{ steps.run_id.outputs.run_id }}"
+
+      - name: Phase 4.3 — upsert vectors to Chroma Cloud
+        run: |
+          python -m ingest.phase_4_3_index \
+            --chunks-dir "$INGEST_CHUNKS_DIR" \
+            --embeddings-dir "$INGEST_EMBEDDINGS_DIR" \
+            --collection "$INGEST_CHROMA_COLLECTION" \
+            --run-id "${{ steps.run_id.outputs.run_id }}"
+
+      - name: Upload run artifacts (chunks, embeddings, structured facts, manifests)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: raw-${{ steps.run_id.outputs.run_id }}
-          path: data/raw/${{ steps.run_id.outputs.run_id }}/
-          if-no-files-found: error
+          name: ingest-${{ steps.run_id.outputs.run_id }}
+          path: |
+            data/raw/${{ steps.run_id.outputs.run_id }}/
+            data/normalized/${{ steps.run_id.outputs.run_id }}/
+            data/chunks/${{ steps.run_id.outputs.run_id }}/
+            data/embeddings/${{ steps.run_id.outputs.run_id }}/
+            data/structured/${{ steps.run_id.outputs.run_id }}/
+          if-no-files-found: warn
           retention-days: 14
-
-  # Future stages (4.1 normalize, 4.2 chunk+embed, 4.3 chroma upsert) plug in here
-  # as additional jobs that depend on `scrape` via `needs: scrape` and consume the
-  # same run_id via `needs.scrape.outputs.run_id`.

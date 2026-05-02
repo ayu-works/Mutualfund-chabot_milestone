@@ -118,20 +118,20 @@ End-to-end flow:
 GH Actions cron (daily 09:15 IST)
       │
       ▼
-scrape (5 Groww URLs) → normalize → chunk → embed (BGE-small) → Chroma upsert (data/chroma/)
+scrape (5 Groww URLs) → normalize → chunk → embed (BGE-small) → Chroma Cloud upsert (CloudClient)
 ```
 
 Scheduler — GitHub Actions
 
 * **Purpose**: Run the full ingest pipeline once a day at **09:15 IST (Asia/Kolkata)** so the Chroma index always reflects the latest content from the 5 allowlisted Groww HDFC scheme pages. Manual re-runs are supported via `workflow_dispatch`.
 * Cron in workflows: GitHub Actions cron uses UTC. For 09:15 IST use `45 3 * * *` (03:45 UTC ≈ 09:15 IST). India has no DST — the UTC offset is fixed at +05:30, so no seasonal adjustment is needed.
-* Workflow responsibilities: The scheduled job in `.github/workflows/ingest.yml` checks out the repo, installs dependencies, and runs in order: scrape (§4.0) → normalize (§4.1) → chunk + embed with local BAAI/bge-small-en-v1.5 → upsert to on-disk Chroma under `data/chroma/` (§4.3). Same `run_id` end-to-end; each stage reads the latest run directory produced by the previous stage. See `chunking-embedding-architecture.md` for chunk/embed details.
-* Secrets: Embedding is local (no API key). Chroma is local (`chromadb.PersistentClient`, default `data/chroma/`) — no hosted vector API. Phase 4.3 and the runtime retriever share `INGEST_CHROMA_DIR` / `INGEST_CHROMA_COLLECTION`. `GROQ_API_KEY` is **not** required for ingest (it is a runtime concern, §6). Optional `INGEST_USER_AGENT` via `${{ secrets.* }}`. Never commit `.env` with production keys.
+* Workflow responsibilities: The scheduled job in `.github/workflows/ingest.yml` checks out the repo, installs dependencies, and runs in order: scrape (§4.0) → normalize (§4.1) → chunk + embed with local BAAI/bge-small-en-v1.5 → upsert to **Chroma Cloud** via `chromadb.CloudClient` (§4.3). Same `run_id` end-to-end; each stage reads the latest run directory produced by the previous stage. See `chunking-embedding-architecture.md` for chunk/embed details.
+* Secrets: Embedding is local (no API key). Chroma is hosted on Chroma Cloud, so phase 4.3 and the runtime retriever share `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_API_KEY`, and `INGEST_CHROMA_COLLECTION` — all injected from GitHub Actions secrets in CI and from `.env` locally. `GROQ_API_KEY` is **not** required for ingest (it is a runtime concern, §6). Optional `INGEST_USER_AGENT` via `${{ secrets.* }}`. Never commit `.env` with production keys.
 * Runners: `ubuntu-latest` is sufficient (I/O- and CPU-bound only). Pin the Python version explicitly in the workflow for reproducibility.
 * Timeouts: Set `timeout-minutes: 30–60` on the job so a hung scrape never consumes quota indefinitely.
 * Idempotency: Re-runs are safe — chunk-id upserts and `content_hash` checks make ingest at-least-once.
 * Manual runs: `workflow_dispatch` enabled so operators can trigger a full ingest from the Actions tab without waiting for the cron.
-* Artifacts: Upload `data/chroma/`, the chunked JSONL, and a per-run `manifest.json` (URL → HTTP status, content_hash, chunk_count) for deploy and debugging.
+* Artifacts: Upload the chunked JSONL, the embeddings JSONL, and a per-run `manifest.json` (URL → HTTP status, content_hash, chunk_count) plus `index_manifest.json` (tenant, database, collection, chunk_count). The vector index itself lives on Chroma Cloud — nothing to upload from `data/chroma/` because that directory is not used.
 * Alternative triggers: `POST /admin/reindex` or a CLI on the app host can call the same ingest code path; GitHub Actions remains the primary scheduled driver.
 
 Scraping service
@@ -170,9 +170,9 @@ Scraping service
 
 * Embed with BAAI/bge-small-en-v1.5 (local inference via sentence-transformers, 384-dim); same model at index build and query time.
 
-1. Index (phase 4.3 — local Chroma)
+1. Index (phase 4.3 — Chroma Cloud)
 
-* Upsert vectors and metadata into on-disk Chroma via PersistentClient (see §4.3 below). Same embedding dimension as ingest (384 for bge-small-en-v1.5).
+* Upsert vectors and metadata into Chroma Cloud via `CloudClient` (see §4.3 below). Same embedding dimension as ingest (384 for bge-small-en-v1.5).
 
 1. Refresh
 
@@ -184,18 +184,19 @@ Scraping service
 * Failed URL: log, alert, exclude from index until fixed; do not silently substitute off-allowlist sources.
 * Partial or empty HTML parse: mark document quality flag; optionally exclude low-confidence chunks from retrieval. When PDFs exist later, apply the same pattern to PDF extraction quality.
 
-4.3 Phase: Vector index — local Chroma (PersistentClient)
+4.3 Phase: Vector index — Chroma Cloud (CloudClient)
 
-Product choice: Use Chroma for dense retrieval with chromadb.PersistentClient: vectors and metadata live under a single directory on disk (default data/chroma/, configurable via INGEST_CHROMA_DIR). Ingest (phase 4.3) and the app’s retriever (§5) read the same path — no separate hosted vector service.
+Product choice: Use **Chroma Cloud** (trychroma.com) for dense retrieval via `chromadb.CloudClient`. Vectors and metadata live in the hosted service; both ingest (phase 4.3) and the app’s retriever (§5) talk to the same tenant + database. There is no local on-disk vector store — `data/chroma/` is not used.
 
 Ingest-time steps (ordered)
 
-1. Client & path
-   * PersistentClient(path=...) pointing at INGEST_CHROMA_DIR (created if missing). Same pattern in CI and on a developer laptop.
+1. Client & credentials
+   * `chromadb.CloudClient(tenant=CHROMA_TENANT, database=CHROMA_DATABASE, api_key=CHROMA_API_KEY)` — all three required, supplied via env (locally `.env`; in CI via GitHub Actions secrets). Never commit the API key.
+   * Same client construction in CI and on a developer laptop; the only difference between environments is which `CHROMA_DATABASE` you point at (e.g. `mf_faq_dev` vs `mf_faq_prod`).
 2. Collection
 
-* One logical collection per deployment (e.g. mf_faq_chunks), or per environment (mf_faq_dev / mf_faq_prod) via INGEST_CHROMA_COLLECTION, created with get_or_create_collection.
-* Dimension:384 (must match BAAI/bge-small-en-v1.5). Distance: cosine (or equivalent for L2-normalized BGE vectors per collection settings).
+* One logical collection per environment (e.g. `mf_faq_chunks_dev` / `mf_faq_chunks_prod`) via `INGEST_CHROMA_COLLECTION`, created with `get_or_create_collection`.
+* Dimension: 384 (must match BAAI/bge-small-en-v1.5). Distance: cosine (or equivalent for L2-normalized BGE vectors per collection settings).
 
 1. Record shape (align with [chunking-embedding-architecture.md](about:blank) §5)
 
@@ -206,34 +207,34 @@ Ingest-time steps (ordered)
 
 1. Upsert strategy
 
-* For each daily ingest run: upsert by chunk_id (add new, update changed embeddings/metadata) into the local collection.
+* For each daily ingest run: upsert by chunk_id (add new, update changed embeddings/metadata) into the Cloud collection.
 * If chunk_text_hash unchanged vs previous manifest, optional optimization: skip that Chroma write (same as §4.4 incremental embed in chunking doc).
 
 1. Deletion / stale data
 
-* If a scheme is removed from the URL registry, delete all collection entries whose scheme_id (or source_url) matches the removed scheme (same API as local Chroma).
+* If a scheme is removed from the URL registry, delete all collection entries whose scheme_id (or source_url) matches the removed scheme (same `collection.delete(where=...)` API on Chroma Cloud).
 * Alternatively replace collection on full reindex for small corpora.
 
 1. Registry / operator manifest
 
-* Emit a small index manifest (JSON) per run: embedding_model_id, run_id, collection_name, chroma_persist_path, chunk_count, updated_at, indexed_at — so operators know which directory the app must mount or copy at deploy time. Store as a workflow artifact next to chunked outputs; upload data/chroma/ as its own artifact for convenience.
+* Emit a small index manifest (JSON) per run: `embedding_model_id`, `run_id`, `collection_name`, `chroma_tenant`, `chroma_database`, `chunk_count`, `updated_at`, `indexed_at` — so operators know which Cloud collection the app must point at. Store as a workflow artifact next to chunked outputs. Do **not** include the API key in the manifest.
 
 1. CI (GitHub Actions)
 
-* After phase 4.2: run phase 4.3 with no vector API keys. The runner writes under data/chroma/; upload that directory (and chunked JSONL) as artifacts. For production hosts, sync or mount that directory (or rebuild index on the server with the same CLI).
+* After phase 4.2: run phase 4.3 with `CHROMA_TENANT` / `CHROMA_DATABASE` / `CHROMA_API_KEY` injected via `${{ secrets.* }}`. The runner makes API calls to Chroma Cloud — there is no `data/chroma/` artifact to upload. Upload chunked JSONL and `index_manifest.json` only.
 
 Query-time (runtime API — future wiring)
 
-* Use the same PersistentClient path (or a read-only copy of the same files) as ingest.
+* Use the same `CloudClient(tenant, database, api_key)` and `INGEST_CHROMA_COLLECTION` as ingest.
 * Embed user query with the same BGE model and query prefix (Represent this sentence: ) per chunking doc.
-* collection.query(query_embeddings=[...], n_results=k, where={...}) with optional where on scheme_id / amc when the router resolves a scheme.
-* Pass retrieved documents + metadata source_url into the LLM context packager (§6).
+* `collection.query(query_embeddings=[...], n_results=k, where={...})` with optional `where` on `scheme_id` / `amc` when the router resolves a scheme.
+* Pass retrieved documents + metadata `source_url` into the LLM context packager (§6).
 
 ---
 
 5. Retrieval Layer
 
-Implementation (code):[runtime/phase_5_retrieval/](about:blank) — BGE query embedding, Chroma query against the on-disk store, merge by source_url, primary citation_url for §6. CLI: python -m runtime.phase_5_retrieval "…".
+Implementation (code):[runtime/phase_5_retrieval/](about:blank) — BGE query embedding, Chroma Cloud query via `CloudClient`, merge by source_url, primary citation_url for §6. CLI: python -m runtime.phase_5_retrieval "…".
 
 5.1 Query preprocessing
 
@@ -379,7 +380,7 @@ Implementation (code):[runtime/phase_9_api/](about:blank) — FastAPI + uvicorn:
 | Layer            | Choice                                                                                                                                    |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Scheduled ingest | GitHub Actions(schedule + workflow_dispatch)                                                                                              |
-| Vector DB        | Chroma— phase4.3(PersistentClient on disk under INGEST_CHROMA_DIR; same path at query time in §5)                                       |
+| Vector DB        | Chroma Cloud— phase4.3(`CloudClient` against trychroma.com using CHROMA_TENANT / CHROMA_DATABASE / CHROMA_API_KEY; same client at query time in §5) |
 | Embeddings       | BAAI/bge-small-en-v1.5via sentence-transformers (local, 384-dim, 512 max tokens); upgrade to bge-base-en-v1.5 (768-dim) when corpus grows |
 | LLM              | Groqchat API for phase 6 (GROQ_API_KEY; model e.g. llama-3.1-8b-instant) — independent of local BGE embeddings                           |
 | Orchestration    | LangChain/LlamaIndex or thin custom pipeline                                                                                              |
@@ -413,4 +414,4 @@ Keep embedding model, chunking parameters, and Chroma collection dimension (384)
 
 14. Summary
 
-The architecture is a closed-book RAG system: a curated, versioned corpus of allowlisted URLs (currently five Groww HDFC scheme pages, HTML only) is refreshed by a GitHub Actions schedule (09:15 IST) that runs scrape → normalize → chunk → embed (see [chunking-embedding-architecture.md](about:blank)) → local Chroma vector upsert under data/chroma/ (§4.3); at query time, a router and retriever (same on-disk collection; similarity + metadata filters) constrain what may be said, and prompts plus post-validation enforce how it is said—short, factual, one source link, and compliant refusal paths for non-factual or advisory requests. Multi-thread support is handled by durable per-thread history and conservative use of that history for retrieval query expansion only.**
+The architecture is a closed-book RAG system: a curated, versioned corpus of allowlisted URLs (currently five Groww HDFC scheme pages, HTML only) is refreshed by a GitHub Actions schedule (09:15 IST) that runs scrape → normalize → chunk → embed (see [chunking-embedding-architecture.md](about:blank)) → Chroma Cloud upsert via `CloudClient` (§4.3); at query time, a router and retriever (same Cloud collection; similarity + metadata filters) constrain what may be said, and prompts plus post-validation enforce how it is said—short, factual, one source link, and compliant refusal paths for non-factual or advisory requests. Multi-thread support is handled by durable per-thread history and conservative use of that history for retrieval query expansion only.**

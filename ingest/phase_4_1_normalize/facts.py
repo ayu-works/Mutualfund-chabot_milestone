@@ -118,14 +118,26 @@ def extract_facts(
     groww_rating = _num(server_data.get("groww_rating"))
     crisil_raw = server_data.get("crisil_rating")
     crisil = _num(crisil_raw) if crisil_raw is not None else None
-    if groww_rating is None and crisil is None:
+    # risk_category: "Very High Risk", "High Risk", "Moderately High Risk", etc.
+    risk_category = (
+        server_data.get("risk_category")
+        or server_data.get("riskometer")
+        or server_data.get("risk")
+        or None
+    )
+    if isinstance(risk_category, str):
+        risk_category = risk_category.strip() or None
+    if groww_rating is None and crisil is None and risk_category is None:
         rating = None
         warnings.append("missing:rating")
     else:
         rating = {
             "groww": groww_rating,
             "crisil": crisil,
-            "kind": "groww" if groww_rating is not None else "crisil",
+            "risk_category": risk_category,
+            "kind": "riskometer" if risk_category is not None else (
+                "groww" if groww_rating is not None else "crisil"
+            ),
         }
 
     return SchemeFacts(

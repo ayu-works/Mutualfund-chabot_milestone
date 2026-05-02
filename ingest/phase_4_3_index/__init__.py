@@ -1,1 +1,3 @@
-# Phase 4.3 — upsert vectors + metadata into local Chroma. See docs/rag-architecture.md §4.3.
+from .indexer import IndexRunStats, index_run
+
+__all__ = ["IndexRunStats", "index_run"]

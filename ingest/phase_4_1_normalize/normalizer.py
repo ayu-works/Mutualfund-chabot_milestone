@@ -41,11 +41,35 @@ def _load_next_data(html: str) -> dict[str, Any]:
     return json.loads(tag.string)
 
 
+_SSD_KEYS = [
+    "mfServerSideData",
+    "mfFundData",
+    "fundDetails",
+    "mfData",
+]
+
+
 def _server_data(next_data: dict[str, Any]) -> dict[str, Any]:
+    page_props: dict[str, Any] = {}
     try:
-        return next_data["props"]["pageProps"]["mfServerSideData"]
+        page_props = next_data["props"]["pageProps"]
     except (KeyError, TypeError) as exc:
-        raise ValueError("mfServerSideData missing in __NEXT_DATA__") from exc
+        raise ValueError("pageProps missing in __NEXT_DATA__") from exc
+
+    for key in _SSD_KEYS:
+        if key in page_props and isinstance(page_props[key], dict):
+            return page_props[key]
+
+    # Last resort: return pageProps itself if it looks like fund data
+    # (has at least one known fact key).
+    _FACT_KEYS = {"nav", "aum", "expense_ratio", "min_sip_investment"}
+    if _FACT_KEYS & page_props.keys():
+        return page_props
+
+    tried = ", ".join(_SSD_KEYS)
+    raise ValueError(
+        f"fund server-data not found under pageProps (tried: {tried})"
+    )
 
 
 def _fmt_inr(n: float | int | None) -> str:
@@ -124,9 +148,13 @@ def _build_key_metrics(ssd: dict[str, Any], facts: SchemeFacts) -> dict[str, Any
         ("Minimum Investment", _fmt_inr(min_inv_val)),
         ("Minimum SIP", _fmt_inr(min_sip_val)),
     ]
+    benchmark = (ssd.get("benchmark_name") or "").strip()
+    if benchmark:
+        rows.append(("Benchmark", benchmark))
     if facts.rating:
         groww = facts.rating.get("groww")
         crisil = facts.rating.get("crisil")
+        risk = facts.rating.get("risk_category")
         rating_parts = []
         if groww is not None:
             rating_parts.append(f"Groww: {groww}/5")
@@ -134,6 +162,8 @@ def _build_key_metrics(ssd: dict[str, Any], facts: SchemeFacts) -> dict[str, Any
             rating_parts.append(f"CRISIL: {crisil}")
         if rating_parts:
             rows.append(("Rating", " · ".join(rating_parts)))
+        if risk:
+            rows.append(("Risk", risk))
 
     md = "| Metric | Value |\n| --- | --- |\n" + "\n".join(
         f"| {label} | {value} |" for label, value in rows

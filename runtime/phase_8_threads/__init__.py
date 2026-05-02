@@ -1,1 +1,15 @@
-# Phase 8 — multi-thread chat store. See docs/rag-architecture.md §8.
+from .threads import (
+    Message,
+    Thread,
+    ThreadedChat,
+    ThreadStore,
+    expand_query,
+)
+
+__all__ = [
+    "Message",
+    "Thread",
+    "ThreadedChat",
+    "ThreadStore",
+    "expand_query",
+]

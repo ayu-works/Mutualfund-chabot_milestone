@@ -1,1 +1,3 @@
-# Phase 5 — retrieval. See docs/rag-architecture.md §5.
+from .retriever import RetrievalHit, RetrievalResult, Retriever, retrieve
+
+__all__ = ["RetrievalHit", "RetrievalResult", "Retriever", "retrieve"]
