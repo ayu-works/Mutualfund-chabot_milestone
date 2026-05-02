@@ -26,6 +26,7 @@ class IndexRunStats:
     chunk_count: int
     upserted_count: int
     skipped_unchanged: int
+    deleted_stale: int
 
 
 def _now_iso() -> str:
@@ -42,6 +43,36 @@ def _embedding_manifest(embeddings_run_dir: Path) -> dict[str, Any]:
     if not p.exists():
         raise FileNotFoundError(f"missing embeddings manifest: {p}")
     return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _get_existing_ids_for_scheme(collection: Any, scheme_id: str) -> set[str]:
+    """Return all chunk_ids currently stored for a given scheme_id."""
+    result = collection.get(
+        where={"scheme_id": scheme_id},
+        include=[],
+    )
+    return set(result.get("ids") or [])
+
+
+def _delete_orphaned_chunks(
+    collection: Any,
+    current_ids_by_scheme: dict[str, set[str]],
+) -> int:
+    """Delete chunks in Chroma that are no longer in the current run.
+
+    Returns total number of deleted chunks.
+    """
+    deleted = 0
+    for scheme_id, current_ids in current_ids_by_scheme.items():
+        existing_ids = _get_existing_ids_for_scheme(collection, scheme_id)
+        orphans = existing_ids - current_ids
+        if orphans:
+            log.info(
+                "deleting %d stale chunks for scheme %s", len(orphans), scheme_id
+            )
+            collection.delete(ids=list(orphans))
+            deleted += len(orphans)
+    return deleted
 
 
 def _existing_hashes(collection: Any, ids: list[str]) -> dict[str, str]:
@@ -167,6 +198,13 @@ def index_run(
     else:
         log.info("no changes; collection already current for run %s", run_id)
 
+    # Remove chunks from previous runs that are no longer in the current run.
+    current_ids_by_scheme: dict[str, set[str]] = {}
+    for c in chunks:
+        sid = c["metadata"].get("scheme_id", "")
+        current_ids_by_scheme.setdefault(sid, set()).add(c["chunk_id"])
+    deleted = _delete_orphaned_chunks(collection, current_ids_by_scheme)
+
     manifest = {
         "run_id": run_id,
         "phase": "4.3_index",
@@ -178,6 +216,7 @@ def index_run(
         "chunk_count": len(chunks),
         "upserted_count": len(upsert_ids),
         "skipped_unchanged": skipped,
+        "deleted_stale": deleted,
         "indexed_at": _now_iso(),
         "updated_at": _now_iso(),
     }
@@ -196,4 +235,5 @@ def index_run(
         chunk_count=len(chunks),
         upserted_count=len(upsert_ids),
         skipped_unchanged=skipped,
+        deleted_stale=deleted,
     )

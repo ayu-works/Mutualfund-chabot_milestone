@@ -78,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"embedding_model_id={stats.embedding_model_id}")
     print(
         f"summary: chunks={stats.chunk_count} upserted={stats.upserted_count} "
-        f"skipped_unchanged={stats.skipped_unchanged}"
+        f"skipped_unchanged={stats.skipped_unchanged} deleted_stale={stats.deleted_stale}"
     )
     return 0
 

@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: mf-faq-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m runtime.phase_9_api
+    envVars:
+      - key: CHROMA_TENANT
+        sync: false
+      - key: CHROMA_DATABASE
+        sync: false
+      - key: CHROMA_API_KEY
+        sync: false
+      - key: INGEST_CHROMA_COLLECTION
+        value: mf_faq_chunks
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: EMBED_MODEL_ID
+        value: BAAI/bge-small-en-v1.5
+      - key: INGEST_REGISTRY_PATH
+        value: data/registry/urls.yaml
+      - key: THREAD_DB_PATH
+        value: data/threads.sqlite
+      - key: THREAD_MAX_TURNS
+        value: "6"
+      - key: RUNTIME_API_DEBUG
+        value: "0"
+      - key: PORT
+        value: "8000"
+      - key: EDUCATIONAL_URL
+        value: https://www.amfiindia.com/investor-corner/investor-center/learn-about-mfs.html
