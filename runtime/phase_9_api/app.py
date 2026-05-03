@@ -26,7 +26,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -176,11 +176,12 @@ def create_app(
             ]
         return [MessageOut(**m.to_dict()) for m in msgs]
 
-    @app.delete("/threads/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
-    def delete_thread(thread_id: str) -> None:
+    @app.delete("/threads/{thread_id}")
+    def delete_thread(thread_id: str) -> Response:
         deleted = _store.delete_thread(thread_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="thread not found")
+        return Response(status_code=204)
 
     @app.post(
         "/threads/{thread_id}/messages",
