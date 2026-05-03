@@ -26,13 +26,13 @@ These are decided. Do not re-litigate without user approval.
 
 | Layer | Choice |
 | --- | --- |
-| Vector DB | Chroma `PersistentClient` on disk (`CHROMA_PATH`, default `data/chroma/`), **384-dim, cosine** |
+| Vector DB | **Chroma Cloud** (`trychroma.com`) — hosted, NOT local disk. Collection `mf_faq_chunks`, 384-dim cosine. Credentials: `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_API_KEY`. |
 | Embeddings | `BAAI/bge-small-en-v1.5` via `sentence-transformers` (local, 384-dim, 512 max input tokens) |
 | LLM (generation) | Groq `llama-3.1-8b-instant` (env var `GROQ_API_KEY`) |
 | Scheduler | GitHub Actions cron `45 3 * * *` UTC = **09:15 IST** (India has no DST) |
-| API | FastAPI + uvicorn |
-| UI | Next.js (under `web/`, **not yet built**) |
-| Threads | SQLite locally; Postgres in production |
+| API | FastAPI 0.115.5 + uvicorn — deployed on **Render** |
+| UI | Next.js 14 + React 18 + Tailwind CSS (under `web/`) — deployed on **Vercel** |
+| Thread store | SQLite locally (`data/threads.sqlite`); Postgres in production |
 | HTTP scraping | `httpx`, `PyYAML` |
 
 **Frozen-across-index-and-query** (changing any of these silently degrades retrieval): `EMBED_MODEL_ID`, embedding dimension (384), Chroma collection name, `CHUNK_TARGET_TOKENS`, `CHUNK_MAX_TOKENS`.
@@ -42,28 +42,46 @@ These are decided. Do not re-litigate without user approval.
 ## 4. Repo layout
 
 ```
-Docs/                                     # requirements
+Docs/                                         # product requirements
   ProblemStatement.md
-docs/                                     # architecture (source of truth)
+docs/                                         # architecture (source of truth)
   rag-architecture.md
   chunking-embedding-architecture.md
 ingest/
-  phase_4_0_scrape/                       # IMPLEMENTED + verified live
+  phase_4_0_scrape/                           # ✅ scrape Groww HTML
     registry.py  scraper.py  __main__.py
-  phase_4_1_chunk/                        # placeholder package only
-  phase_4_2_embed/                        # placeholder package only
-  phase_4_3_index/                        # placeholder package only
+  phase_4_1_normalize/                        # ✅ extract __NEXT_DATA__ facts
+    __main__.py
+  phase_4_1_chunk/                            # ✅ section-aware chunker
+    chunker.py  __main__.py
+  phase_4_2_embed/                            # ✅ BGE embedder (incremental)
+    embedder.py  __main__.py
+  phase_4_3_index/                            # ✅ Chroma Cloud upsert
+    indexer.py  __main__.py
 runtime/
-  phase_5_retrieval/                      # placeholder package only
-  phase_6_generation/                     # placeholder package only
-  phase_7_safety/                         # placeholder package only
-  phase_8_threads/                        # placeholder package only
-  phase_9_api/                            # placeholder package only
+  phase_5_retrieval/                          # ✅ scheme-aware Chroma retrieval
+    retriever.py  __main__.py
+  phase_6_generation/                         # ✅ Groq LLM + validation
+    generator.py  __main__.py
+  phase_7_safety/                             # ✅ advisory/PII router + refusal
+    safety.py  __main__.py
+  phase_8_threads/                            # ✅ SQLite multi-thread chat store
+    threads.py  __main__.py
+  phase_9_api/                                # ✅ FastAPI REST server
+    app.py  __main__.py
+web/                                          # ✅ Next.js 14 frontend
+  src/
+    app/layout.tsx  globals.css
+    components/
+      ChatArea.tsx  MessageBubble.tsx  MessageInput.tsx
+      SourceCard.tsx  Logo.tsx  ThemeToggle.tsx
+    hooks/useTheme.ts
+    lib/types.ts
 data/
-  registry/urls.yaml                      # 5 Groww HDFC URLs (committed)
-  raw/, normalized/, chunks/,             # all gitignored — regenerated
-  embeddings/, chroma/, structured/         per ingest run
-.github/workflows/ingest.yml              # cron + workflow_dispatch
+  registry/urls.yaml                          # 5 Groww HDFC URLs (committed)
+  raw/, normalized/, chunks/,                 # all gitignored — regenerated
+  embeddings/, structured/                    # per ingest run
+.github/workflows/ingest.yml                 # daily cron + workflow_dispatch
 requirements.txt
 .env.example
 .gitignore
@@ -76,7 +94,8 @@ requirements.txt
 | Phase | Status | Entry point |
 | --- | --- | --- |
 | 4.0 scrape | ✅ Done, live-verified | `python -m ingest.phase_4_0_scrape -v` |
-| 4.1 normalize + chunk | ✅ Implemented | `python -m ingest.phase_4_1_chunk --run-id <id>` |
+| 4.1 normalize | ✅ Implemented | `python -m ingest.phase_4_1_normalize --run-id <id>` |
+| 4.1 chunk | ✅ Implemented | `python -m ingest.phase_4_1_chunk --run-id <id>` |
 | 4.2 embed | ✅ Implemented | `python -m ingest.phase_4_2_embed --run-id <id>` |
 | 4.3 Chroma upsert | ✅ Implemented | `python -m ingest.phase_4_3_index --run-id <id>` |
 | 5 retrieval | ✅ Implemented | `python -m runtime.phase_5_retrieval "<query>"` |
@@ -84,63 +103,106 @@ requirements.txt
 | 7 safety / refusal | ✅ Implemented | `python -m runtime.phase_7_safety "<query>"` (`--route-only` to skip retrieval) |
 | 8 multi-thread | ✅ Implemented | `python -m runtime.phase_8_threads {new-thread\|say\|history\|context\|list-threads}` |
 | 9 FastAPI | ✅ Implemented | `python -m runtime.phase_9_api` (UI at `/ui/`, OpenAPI at `/docs`) |
-
-Placeholder packages exist as empty `__init__.py` files so future phases drop into a known module path without restructuring imports.
+| Web frontend | ✅ Implemented | `cd web && npm run dev` (port 3000) |
 
 ---
 
-## 6. How to run
+## 6. How to run locally
 
 ```bash
+# 1. Backend
 pip install -r requirements.txt
-cp .env.example .env                       # fill GROQ_API_KEY when phase 6 lands
-python -m ingest.phase_4_0_scrape -v       # writes data/raw/<run_id>/{*.html, manifest.json}
+cp .env.example .env          # fill GROQ_API_KEY, CHROMA_TENANT, CHROMA_DATABASE, CHROMA_API_KEY
+
+# 2. Full ingest pipeline (re-run before testing downstream phases)
+python -m ingest.phase_4_0_scrape -v                   # → data/raw/<run_id>/
+python -m ingest.phase_4_1_normalize --run-id <id>     # → data/normalized/<run_id>/
+python -m ingest.phase_4_1_chunk --run-id <id>         # → data/chunks/<run_id>/
+python -m ingest.phase_4_2_embed --run-id <id>         # → data/embeddings/<run_id>/
+python -m ingest.phase_4_3_index --run-id <id>         # → upserts to Chroma Cloud
+
+# 3. API server
+python -m runtime.phase_9_api                          # http://localhost:8000
+
+# 4. Frontend
+cd web && npm install && npm run dev                   # http://localhost:3000
 ```
 
-CLI flags: `--registry`, `--raw-dir`, `--run-id`, `--user-agent`, `--rate-limit`, `--timeout`, `--retries`, `--min-success-ratio`. All have env-var equivalents — see `.env.example`.
+### Ingest CLI flags (phase 4.0)
 
-CI: `.github/workflows/ingest.yml` runs the same command daily at 09:15 IST and on `workflow_dispatch`. It uploads `data/raw/<run_id>/` as an artifact.
+`--registry`, `--raw-dir`, `--run-id`, `--user-agent`, `--rate-limit`, `--timeout`, `--retries`, `--min-success-ratio`. All have env-var equivalents — see `.env.example`.
 
 ---
 
-## 7. Last verified live run
+## 7. API endpoints (phase 9)
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/` | JSON pointers to docs, UI, health |
+| GET | `/health` | Liveness check |
+| POST | `/threads` | Create a new chat thread |
+| GET | `/threads` | List threads (filter by `session_key`) |
+| GET | `/threads/{id}/messages` | Fetch thread history |
+| POST | `/threads/{id}/messages` | Send a message, get an answer |
+| DELETE | `/threads/{id}` | Delete a thread |
+| POST | `/admin/reindex` | Stub (501) — use GitHub Actions |
+| GET | `/ui` | Static Next.js frontend |
+| GET | `/docs` | OpenAPI docs |
+
+`RUNTIME_API_DEBUG=1` adds latency, route reason, validation errors to responses.
+
+---
+
+## 8. Web frontend (Next.js 14)
+
+Located in `web/`. Key components:
+- `ChatArea.tsx` — main chat panel, thread history display
+- `MessageBubble.tsx` — user/assistant message with citation and footer
+- `MessageInput.tsx` — textarea + send button
+- `SourceCard.tsx` — citation URL display card
+- `ThemeToggle.tsx` — light/dark mode toggle
+- `Logo.tsx` — app branding
+- `useTheme.ts` — theme hook
+- `lib/types.ts` — shared TypeScript types (`Thread`, `Message`, `ChatState`)
+
+Build for static export: `npm run build` in `web/` (output goes to `web/out/`, served by FastAPI at `/ui`).
+
+---
+
+## 9. Deployment
+
+- **Backend**: Render. Uses CPU-only torch (`--extra-index-url` for CPU wheels). Calls Render API directly. FastAPI served via uvicorn.
+- **Frontend**: Vercel. Next.js static export. Calls Render backend directly (no Vercel rewrites — removed after early debugging).
+
+---
+
+## 10. Last verified live run
 
 - **Date**: 2026-04-26. `run_id = 2026-04-26T142426Z`.
 - **Result**: 5/5 fetched, ~1.9 MB total HTML. All HTTP 200 (Cloudflare-fronted).
 - **Manifest**: per-URL `status`, `http_status`, `fetched_at`, `content_hash` (sha256), `bytes_written`, `output_path`.
 - **Content sanity check** (mid-cap page, 411 KB):
   - `<title>` and meta description are real fund content.
-  - `__NEXT_DATA__` JSON blob is **present** — that is where structured facts (NAV, AUM, expense ratio, etc.) live. **Plain-HTML regex won't reach them.**
+  - `__NEXT_DATA__` JSON blob is **present** — structured facts (NAV, AUM, expense ratio, etc.) live there. Plain-HTML regex won't reach them.
   - Literal substrings present in HTML: `Expense Ratio`, `Exit Load`, `NAV`, `AUM`, `Benchmark`.
-  - **Not** present as literal text: `Min SIP`, `Riskometer` — phase 4.1 must extract these from the `__NEXT_DATA__` JSON, not regex over rendered HTML.
+  - **Not** present as literal text: `Min SIP`, `Riskometer` — phase 4.1 extracts these from `__NEXT_DATA__` JSON.
 
 ---
 
-## 8. Next task — phase 6 (Groq generation)
+## 11. Gotchas
 
-Phases 4.0 → 5 are implemented. The next layer to build is phase 6 (generation), per `docs/rag-architecture.md` §6:
-
-- Pack retrieved chunks (`RetrievalResult.merged_context`) with explicit `Source URL:` headers.
-- Call Groq chat completions (`GROQ_API_KEY`, model `llama-3.1-8b-instant`) with low temperature.
-- Output schema: ≤3 sentences, exactly one URL = `result.citation_url`, footer `Last updated from sources: <date>`.
-- Run §7.2-style validation (allowlist URL, sentence count, forbidden phrases) with one retry, then templated fallback.
-- CLI: `python -m runtime.phase_6_generation "<query>"`.
-
----
-
-## 9. Gotchas
-
-- `data/raw/`, `data/normalized/`, `data/chunks/`, `data/embeddings/`, `data/chroma/`, `data/structured/` are **gitignored** — they are per-run artifacts. Re-run the scraper before testing downstream phases locally. Only `data/registry/urls.yaml` is committed.
+- `data/raw/`, `data/normalized/`, `data/chunks/`, `data/embeddings/`, `data/structured/` are **gitignored** — per-run artifacts. Re-run the scraper before testing downstream phases locally. Only `data/registry/urls.yaml` is committed.
 - GitHub Actions cron is **UTC** — `45 3 * * *` is 09:15 IST. Don't "fix" it.
-- `min_success_ratio` defaults to 0.8 — if any 1 of 5 URLs fails, the scraper exits non-zero and CI marks the run failed. Lower it deliberately, not silently.
-- Default User-Agent in `.env.example` has a placeholder GitHub URL — replace with the real repo URL once published, and override via `INGEST_USER_AGENT`.
-- Architecture docs use placeholder hrefs like `[chunking-embedding-architecture.md](about:blank)` in some tables. The filename is what matters; ignore the `about:blank`.
+- `min_success_ratio` defaults to 0.8 — if any 1 of 5 URLs fails, the scraper exits non-zero. Lower deliberately, not silently.
+- Default User-Agent in `.env.example` has a placeholder GitHub URL — replace with the real repo URL once published.
 - The Chroma collection dimension is fixed **at creation**. Switching to `bge-base-en-v1.5` (768-dim) requires a brand-new collection + full reindex.
 - Generation (Groq) and embeddings (local BGE) are **independent providers** — don't conflate them. `GROQ_API_KEY` is not needed for ingest.
+- FastAPI 0.115.5 has a known startup crash on `DELETE /threads/{thread_id}` that was fixed (commit `477eb28`). If you upgrade FastAPI, verify the DELETE endpoint still works.
+- The frontend calls the Render API directly — there are no Next.js rewrites in `vercel.json`. Do not add them.
 
 ---
 
-## 10. User preferences (observed)
+## 12. User preferences (observed)
 
 - Prefers detailed architecture docs with explicit code-path references (filename + section number) over abstract prose.
 - Prefers concise, skimmable updates with proof of verification (e.g., live run output, file listing) over narration of intent.
